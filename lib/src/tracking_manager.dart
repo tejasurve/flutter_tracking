@@ -11,7 +11,7 @@ class TrackingManager {
 
   late Session session;
   final List<Map<String, dynamic>> _events = [];
-
+  
   /// Initialize session with automatic IP detection
   Future<void> init({String msisdn = "", String customerId = ""}) async {
     final ip = await IpManager.getIpAddress() ?? "Unknown";
@@ -20,6 +20,12 @@ class TrackingManager {
       customerId: customerId,
       ipAddress: ip,
     );
+  }
+
+  /// Dynamically update user info after login
+  void updateUser({required String msisdn, required String customerId}) {
+    session.msisdn = msisdn;
+    session.customerId = customerId;
   }
 
   /// Optional: refresh IP if network changes

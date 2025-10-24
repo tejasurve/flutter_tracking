@@ -2,8 +2,8 @@ import 'package:uuid/uuid.dart';
 
 class Session {
   final String sessionId;
-  final String msisdn;
-  final String customerId;
+  String msisdn;
+  String customerId;
   String ipAddress; // make it mutable
 
   Session({
