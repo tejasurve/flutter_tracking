@@ -11,7 +11,7 @@ class TrackingManager {
 
   late Session session;
   final List<Map<String, dynamic>> _events = [];
-  
+
   /// Initialize session with automatic IP detection
   Future<void> init({String msisdn = "", String customerId = ""}) async {
     final ip = await IpManager.getIpAddress() ?? "Unknown";
@@ -20,17 +20,24 @@ class TrackingManager {
       customerId: customerId,
       ipAddress: ip,
     );
+    debugPrint(
+        "[MobileMonitorSDK] Session initialized: sessionId=${session.sessionId}, IP=${session.ipAddress}, MSISDN=${session.msisdn}, CustomerID=${session.customerId}");
   }
 
   /// Dynamically update user info after login
   void updateUser({required String msisdn, required String customerId}) {
     session.msisdn = msisdn;
     session.customerId = customerId;
+    debugPrint(
+        "[MobileMonitorSDK] User info updated: MSISDN=${session.msisdn}, CustomerID=${session.customerId}");
   }
 
   /// Optional: refresh IP if network changes
   Future<void> refreshIp() async {
-    session.updateIp(await IpManager.getIpAddress() ?? session.ipAddress);
+    final oldIp = session.ipAddress;
+    final newIp = await IpManager.getIpAddress() ?? oldIp;
+    session.updateIp(newIp);
+    debugPrint("[MobileMonitorSDK] IP updated: $oldIp -> $newIp");
   }
 
   void addEvent(Map<String, dynamic> event) {
@@ -41,25 +48,35 @@ class TrackingManager {
     event["customer_id"] = session.customerId;
 
     _events.add(event);
+
+    debugPrint("[MobileMonitorSDK] Event added: ${event.toString()}");
   }
 
   Future<void> sendEvents() async {
-    if (_events.isEmpty) return;
+    if (_events.isEmpty) {
+      debugPrint("[MobileMonitorSDK] No events to send");
+      return;
+    }
 
-    final url = Uri.parse("http://localhost:4000/api/v1/ingest");
+    final url = Uri.parse("http://192.168.1.64:4000/api/v1/ingest");
+    debugPrint("[MobileMonitorSDK] Sending ${_events.length} events to $url");
+
     try {
       final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(_events),
       );
+
       if (response.statusCode == 200) {
+        debugPrint("[MobileMonitorSDK] Events sent successfully");
         _events.clear();
       } else {
-        debugPrint("Failed to send events: ${response.statusCode}");
+        debugPrint(
+            "[MobileMonitorSDK] Failed to send events: ${response.statusCode}, Body: ${response.body}");
       }
     } catch (e) {
-      debugPrint("Error sending events: $e");
+      debugPrint("[MobileMonitorSDK] Error sending events: $e");
     }
   }
 }
