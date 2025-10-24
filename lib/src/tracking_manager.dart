@@ -13,12 +13,13 @@ class TrackingManager {
   final List<Map<String, dynamic>> _events = [];
 
   /// Initialize session with automatic IP detection
-  Future<void> init({
-    required String msisdn,
-    required String customerId,
-  }) async {
+  Future<void> init({String msisdn = "", String customerId = ""}) async {
     final ip = await IpManager.getIpAddress() ?? "Unknown";
-    session = Session(msisdn: msisdn, customerId: customerId, ipAddress: ip);
+    session = Session(
+      msisdn: msisdn,
+      customerId: customerId,
+      ipAddress: ip,
+    );
   }
 
   /// Optional: refresh IP if network changes
