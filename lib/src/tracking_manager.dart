@@ -1,6 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:battery_plus/battery_plus.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+
 import 'session.dart';
 import 'ip_manager.dart';
 
@@ -11,6 +20,11 @@ class TrackingManager {
 
   late Session session;
   final List<Map<String, dynamic>> _events = [];
+  Timer? _autoSendTimer;
+  bool _isSending = false;
+
+  static const int _maxBatchSize = 100; // safety limit
+  static const Duration _defaultInterval = Duration(seconds: 10);
 
   /// Initialize session with automatic IP detection
   Future<void> init({String msisdn = "", String customerId = ""}) async {
@@ -19,64 +33,183 @@ class TrackingManager {
       msisdn: msisdn,
       customerId: customerId,
       ipAddress: ip,
+      sessionStart: DateTime.now(),
     );
-    debugPrint(
-        "[MobileMonitorSDK] Session initialized: sessionId=${session.sessionId}, IP=${session.ipAddress}, MSISDN=${session.msisdn}, CustomerID=${session.customerId}");
+
+    // Start background auto-send
+    _startAutoSend();
+    debugPrint("[MobileMonitorSDK] Initialized with IP: $ip");
   }
 
-  /// Dynamically update user info after login
+  /// Update user info dynamically after login
   void updateUser({required String msisdn, required String customerId}) {
     session.msisdn = msisdn;
     session.customerId = customerId;
-    debugPrint(
-        "[MobileMonitorSDK] User info updated: MSISDN=${session.msisdn}, CustomerID=${session.customerId}");
+    debugPrint("[MobileMonitorSDK] Updated user: $msisdn | $customerId");
   }
 
-  /// Optional: refresh IP if network changes
+  /// Refresh IP if network changes
   Future<void> refreshIp() async {
-    final oldIp = session.ipAddress;
-    final newIp = await IpManager.getIpAddress() ?? oldIp;
+    final newIp = await IpManager.getIpAddress() ?? session.ipAddress;
     session.updateIp(newIp);
-    debugPrint("[MobileMonitorSDK] IP updated: $oldIp -> $newIp");
+    debugPrint("[MobileMonitorSDK] IP refreshed: $newIp");
   }
 
-  void addEvent(Map<String, dynamic> event) {
-    // Attach current IP automatically
+  /// Get device info and app version
+  Future<Map<String, dynamic>> _getDeviceInfo() async {
+    final deviceInfo = DeviceInfoPlugin();
+    final packageInfo = await PackageInfo.fromPlatform();
+
+    String os = "";
+    String osVersion = "";
+    String platform = "";
+
+    if (Platform.isAndroid) {
+      final info = await deviceInfo.androidInfo;
+      os = "Android";
+      osVersion = info.version.release ?? "";
+      platform = info.model ?? "";
+    } else if (Platform.isIOS) {
+      final info = await deviceInfo.iosInfo;
+      os = "iOS";
+      osVersion = info.systemVersion ?? "";
+      platform = info.utsname.machine ?? "";
+    }
+
+    return {
+      "os": os,
+      "os_version": osVersion,
+      "platform": platform,
+      "app_version": packageInfo.version,
+    };
+  }
+
+  /// Get battery status
+  Future<int> _getBatteryStatus() async {
+    final battery = Battery();
+    return await battery.batteryLevel;
+  }
+
+  /// Get network type
+  Future<String> _getNetworkType() async {
+    final connectivity = Connectivity();
+    try {
+      final results = await connectivity
+          .checkConnectivity(); // could be List<ConnectivityResult>
+      final result =
+          results.isNotEmpty ? results.first : ConnectivityResult.none;
+
+      switch (result) {
+        case ConnectivityResult.mobile:
+          return "mobile";
+        case ConnectivityResult.wifi:
+          return "wifi";
+        case ConnectivityResult.ethernet:
+          return "ethernet";
+        case ConnectivityResult.bluetooth:
+          return "bluetooth";
+        case ConnectivityResult.vpn:
+          return "vpn";
+        case ConnectivityResult.none:
+          return "none";
+        default:
+          return "unknown";
+      }
+    } catch (_) {
+      return "unknown";
+    }
+  }
+
+  /// Get geolocation
+  Future<Map<String, double>> _getGeoLocation() async {
+    try {
+      final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high);
+      return {"lat": position.latitude, "lng": position.longitude};
+    } catch (_) {
+      return {"lat": 0, "lng": 0}; // fallback
+    }
+  }
+
+  /// Add an event and flush automatically if limit reached
+  /// Add an event and flush automatically if limit reached
+  void addEvent(Map<String, dynamic> event) async {
+    // Attach basic session info
     event["ip_address"] = session.ipAddress;
     event["session_id"] = session.sessionId;
     event["msisdn"] = session.msisdn;
     event["customer_id"] = session.customerId;
 
+    // Attach device and app info
+    event["device_info"] = await _getDeviceInfo();
+    event["battery_status"] = await _getBatteryStatus();
+    event["network_type"] = await _getNetworkType(); // fixed
+    event["geolocation"] = await _getGeoLocation();
+    event["last_activity"] = DateTime.now().toIso8601String();
+
     _events.add(event);
 
-    debugPrint("[MobileMonitorSDK] Event added: ${event.toString()}");
+    debugPrint(
+        "[MobileMonitorSDK] Queued event: ${event['type']} (total: ${_events.length})");
+
+    if (_events.length >= _maxBatchSize) {
+      debugPrint("[MobileMonitorSDK] Max batch size reached. Sending now...");
+      await sendEvents();
+    }
   }
 
+  /// Send events batch to the server
   Future<void> sendEvents() async {
-    if (_events.isEmpty) {
-      debugPrint("[MobileMonitorSDK] No events to send");
-      return;
-    }
+    if (_isSending || _events.isEmpty) return;
 
+    _isSending = true;
+    final eventsToSend = List<Map<String, dynamic>>.from(_events);
     final url = Uri.parse("http://192.168.1.64:4000/api/v1/ingest");
-    debugPrint("[MobileMonitorSDK] Sending ${_events.length} events to $url");
 
     try {
       final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(_events),
+        body: jsonEncode(eventsToSend),
       );
 
       if (response.statusCode == 200) {
-        debugPrint("[MobileMonitorSDK] Events sent successfully");
-        _events.clear();
+        debugPrint(
+            "[MobileMonitorSDK] Sent ${eventsToSend.length} events successfully ✅");
+        _events.removeRange(0, eventsToSend.length);
       } else {
         debugPrint(
-            "[MobileMonitorSDK] Failed to send events: ${response.statusCode}, Body: ${response.body}");
+            "[MobileMonitorSDK] Failed to send events: ${response.statusCode}");
       }
     } catch (e) {
       debugPrint("[MobileMonitorSDK] Error sending events: $e");
+    } finally {
+      _isSending = false;
     }
+  }
+
+  /// Background auto-send (runs every 10 sec by default)
+  void _startAutoSend({Duration interval = _defaultInterval}) {
+    _autoSendTimer?.cancel();
+    _autoSendTimer = Timer.periodic(interval, (_) async {
+      if (_events.isNotEmpty) {
+        debugPrint(
+            "[MobileMonitorSDK] Auto-sending ${_events.length} queued events...");
+        await sendEvents();
+      }
+    });
+    debugPrint(
+        "[MobileMonitorSDK] Auto-send started (interval: ${interval.inSeconds}s)");
+  }
+
+  /// Stop auto-sending (e.g., on app dispose or logout)
+  void stopAutoSend() {
+    _autoSendTimer?.cancel();
+    debugPrint("[MobileMonitorSDK] Auto-send stopped.");
+  }
+
+  /// Get current session duration in seconds
+  int getSessionDuration() {
+    return DateTime.now().difference(session.sessionStart).inSeconds;
   }
 }
