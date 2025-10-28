@@ -41,11 +41,22 @@ class TrackingManager {
     debugPrint("[MobileMonitorSDK] Initialized with IP: $ip");
   }
 
-  /// Update user info dynamically after login
-  void updateUser({required String msisdn, required String customerId}) {
+  /// Update user info dynamically after login and attach session-level device info
+  Future<void> updateUser({
+    required String msisdn,
+    required String customerId,
+  }) async {
     session.msisdn = msisdn;
     session.customerId = customerId;
-    debugPrint("[MobileMonitorSDK] Updated user: $msisdn | $customerId");
+
+    // Attach device/session info at session level
+    session.deviceInfo = await _getDeviceInfo();
+    session.batteryStatus = await _getBatteryStatus();
+    session.networkType = await _getNetworkType();
+    session.geolocation = await _getGeoLocation();
+    session.lastActivity = DateTime.now().toIso8601String();
+
+    debugPrint("[MobileMonitorSDK] Updated user & session info: $msisdn | $customerId");
   }
 
   /// Refresh IP if network changes
@@ -94,11 +105,7 @@ class TrackingManager {
   Future<String> _getNetworkType() async {
     final connectivity = Connectivity();
     try {
-      final results = await connectivity
-          .checkConnectivity(); // could be List<ConnectivityResult>
-      final result =
-          results.isNotEmpty ? results.first : ConnectivityResult.none;
-
+      final result = await connectivity.checkConnectivity();
       switch (result) {
         case ConnectivityResult.mobile:
           return "mobile";
@@ -132,25 +139,23 @@ class TrackingManager {
   }
 
   /// Add an event and flush automatically if limit reached
-  /// Add an event and flush automatically if limit reached
-  void addEvent(Map<String, dynamic> event) async {
+  Future<void> addEvent(Map<String, dynamic> event) async {
     // Attach basic session info
     event["ip_address"] = session.ipAddress;
     event["session_id"] = session.sessionId;
     event["msisdn"] = session.msisdn;
     event["customer_id"] = session.customerId;
 
-    // Attach device and app info
+    // Attach device and app info per event
     event["device_info"] = await _getDeviceInfo();
     event["battery_status"] = await _getBatteryStatus();
-    event["network_type"] = await _getNetworkType(); // fixed
+    event["network_type"] = await _getNetworkType();
     event["geolocation"] = await _getGeoLocation();
     event["last_activity"] = DateTime.now().toIso8601String();
 
     _events.add(event);
 
-    debugPrint(
-        "[MobileMonitorSDK] Queued event: ${event['type']} (total: ${_events.length})");
+    debugPrint("[MobileMonitorSDK] Queued event: ${event['type']} (total: ${_events.length})");
 
     if (_events.length >= _maxBatchSize) {
       debugPrint("[MobileMonitorSDK] Max batch size reached. Sending now...");
@@ -174,12 +179,10 @@ class TrackingManager {
       );
 
       if (response.statusCode == 200) {
-        debugPrint(
-            "[MobileMonitorSDK] Sent ${eventsToSend.length} events successfully ✅");
+        debugPrint("[MobileMonitorSDK] Sent ${eventsToSend.length} events successfully ✅");
         _events.removeRange(0, eventsToSend.length);
       } else {
-        debugPrint(
-            "[MobileMonitorSDK] Failed to send events: ${response.statusCode}");
+        debugPrint("[MobileMonitorSDK] Failed to send events: ${response.statusCode}");
       }
     } catch (e) {
       debugPrint("[MobileMonitorSDK] Error sending events: $e");
@@ -193,13 +196,11 @@ class TrackingManager {
     _autoSendTimer?.cancel();
     _autoSendTimer = Timer.periodic(interval, (_) async {
       if (_events.isNotEmpty) {
-        debugPrint(
-            "[MobileMonitorSDK] Auto-sending ${_events.length} queued events...");
+        debugPrint("[MobileMonitorSDK] Auto-sending ${_events.length} queued events...");
         await sendEvents();
       }
     });
-    debugPrint(
-        "[MobileMonitorSDK] Auto-send started (interval: ${interval.inSeconds}s)");
+    debugPrint("[MobileMonitorSDK] Auto-send started (interval: ${interval.inSeconds}s)");
   }
 
   /// Stop auto-sending (e.g., on app dispose or logout)
