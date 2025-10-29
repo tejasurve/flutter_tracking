@@ -35,9 +35,16 @@ class TrackingManager {
       ipAddress: ip,
       sessionStart: DateTime.now(),
     );
+    session.deviceInfo = await _getDeviceInfo();
+    session.batteryStatus = await _getBatteryStatus();
+    session.networkType = await _getNetworkType();
+    session.geolocation = await _getGeoLocation();
+    session.lastActivity = DateTime.now().toIso8601String();
 
     _startAutoSend();
     debugPrint("[MobileMonitorSDK] Initialized with IP: $ip");
+    debugPrint(
+        "[MobileMonitorSDK] Session info updated: $msisdn | $customerId | ${session.deviceInfo} | ${session.batteryStatus} | ${session.networkType} | ${session.geolocation} | ${session.lastActivity}");
   }
 
   /// Update user info and attach session-level device info (once)
@@ -47,13 +54,11 @@ class TrackingManager {
   }) async {
     session.msisdn = msisdn;
     session.customerId = customerId;
-
     session.deviceInfo = await _getDeviceInfo();
     session.batteryStatus = await _getBatteryStatus();
     session.networkType = await _getNetworkType();
     session.geolocation = await _getGeoLocation();
     session.lastActivity = DateTime.now().toIso8601String();
-
     debugPrint(
         "[MobileMonitorSDK] Session info updated: $msisdn | $customerId | ${session.deviceInfo} | ${session.batteryStatus} | ${session.networkType} | ${session.geolocation} | ${session.lastActivity}");
 
@@ -137,6 +142,10 @@ class TrackingManager {
     event["session_id"] = session.sessionId;
     event["msisdn"] = session.msisdn;
     event["customer_id"] = session.customerId;
+    event["deviceInfo"] = session.deviceInfo;
+    event["batteryStatus"] = session.batteryStatus;
+    event["networkType"] = session.networkType;
+    event["geolocation"] = session.geolocation;
 
     // Optional: attach basic device info per event (if needed)
     event["last_activity"] = DateTime.now().toIso8601String();
